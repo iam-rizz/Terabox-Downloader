@@ -11,7 +11,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { url } = req.body;
+    const { url, password = '' } = req.body;
 
     // Validate input
     if (!url || typeof url !== 'string') {
@@ -40,9 +40,10 @@ export default async function handler(req, res) {
 
     console.log('Processing URL:', url);
     console.log('Extracted Share ID:', shareId);
+    console.log('Password provided:', password ? 'Yes' : 'No');
 
-    // Get download link using Terabox API
-    const downloadData = await getTeraboxDownloadLink(shareId, url);
+    // Get download link using TeraXtract API method
+    const downloadData = await getTeraboxDownloadLink(shareId, password);
     
     return res.status(200).json({
       success: true,
@@ -53,17 +54,24 @@ export default async function handler(req, res) {
     console.error('Terabox API Error:', error.message);
     
     // Handle specific errors
-    if (error.message.includes('Cookie not configured')) {
-      return res.status(500).json({ 
+    if (error.message.includes('API not available')) {
+      return res.status(503).json({ 
         success: false, 
-        error: 'Server configuration error. Please contact administrator.' 
+        error: 'Service temporarily unavailable. Please try again later.' 
       });
     }
     
-    if (error.message.includes('Invalid share')) {
+    if (error.message.includes('Share not found')) {
       return res.status(404).json({ 
         success: false, 
         error: 'Share not found or expired. Please check the URL.' 
+      });
+    }
+
+    if (error.message.includes('Password required')) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'This share is password protected. Please provide the password.' 
       });
     }
 
@@ -121,110 +129,175 @@ function extractShareId(url) {
 }
 
 /**
- * Main function to get download links from Terabox
+ * Main function to get download links from Terabox using TeraXtract API method
  */
-async function getTeraboxDownloadLink(shareId, originalUrl) {
-  const COOKIE = process.env.TERABOX_COOKIE;
+async function getTeraboxDownloadLink(shareId, password = '') {
+  const API_BASE = 'https://terabox.hnn.workers.dev';
   
-  if (!COOKIE || COOKIE.trim() === '') {
-    throw new Error('Cookie not configured. Please set TERABOX_COOKIE in environment variables.');
-  }
-
-  // Common headers for all requests
-  const headers = {
-    'Cookie': COOKIE,
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://www.terabox.com/',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-origin',
-  };
-
   try {
-    // Step 1: Get share info
-    console.log('Fetching share info for:', shareId);
+    console.log('Using TeraXtract API method...');
     
-    const shareInfoUrl = `https://www.terabox.com/api/shorturlinfo?surl=${shareId}&root=1`;
-    const shareInfoResponse = await axios.get(shareInfoUrl, { 
-      headers,
-      timeout: 15000 // 15 second timeout
+    // Step 1: Get file info using TeraXtract API
+    const infoResponse = await axios.get(`${API_BASE}/api/get-info-new`, {
+      params: {
+        shorturl: shareId,
+        pwd: password
+      },
+      headers: {
+        'Referer': `${API_BASE}/`,
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Host': 'terabox.hnn.workers.dev',
+        'Accept': '*/*',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+      },
+      timeout: 20000
     });
 
-    const shareInfo = shareInfoResponse.data;
-    console.log('Share info response:', shareInfo);
+    const infoData = infoResponse.data;
+    console.log('Info API response:', infoData);
 
-    if (shareInfo.errno !== 0) {
-      throw new Error(`Invalid share: ${shareInfo.errmsg || 'Unknown error'}`);
+    // Check if the response is successful
+    if (!infoData.ok) {
+      if (infoData.msg && infoData.msg.includes('password')) {
+        throw new Error('Password required for this share');
+      }
+      throw new Error(infoData.msg || 'Share not found or expired');
     }
 
-    const fileList = shareInfo.list;
-    if (!fileList || fileList.length === 0) {
+    // Extract file information
+    if (!infoData.list || infoData.list.length === 0) {
       throw new Error('No files found in the share');
     }
 
-    // Step 2: Get download links for files
+    const { shareid, uk, sign, timestamp } = infoData;
     const results = [];
-    const maxFiles = Math.min(fileList.length, 10); // Limit to 10 files
+    
+    // Helper function to collect all files from the list (including files in folders)
+    const collectAllFiles = (items, parentPath = '') => {
+      const allFiles = [];
+      
+      for (const item of items) {
+        const currentPath = parentPath ? `${parentPath}/${item.filename}` : item.filename;
+        
+        if (item.is_dir === "1" && item.children && Array.isArray(item.children)) {
+          // This is a folder with children - recursively collect files from it
+          console.log(`Found folder: ${item.filename} with ${item.children.length} children`);
+          const childFiles = collectAllFiles(item.children, currentPath);
+          allFiles.push(...childFiles);
+        } else if (item.is_dir === "0") {
+          // This is a file
+          allFiles.push({
+            ...item,
+            fullPath: currentPath
+          });
+        }
+      }
+      
+      return allFiles;
+    };
 
+    const allFiles = collectAllFiles(infoData.list);
+    const maxFiles = Math.min(allFiles.length, 10); // Process up to 10 files
+    
+    console.log(`Total files found: ${allFiles.length}, processing first ${maxFiles}`);
+
+    // Step 2: Get download links for each file
     for (let i = 0; i < maxFiles; i++) {
-      const file = fileList[i];
+      const file = allFiles[i];
       
       try {
-        console.log(`Processing file ${i + 1}/${maxFiles}: ${file.server_filename}`);
+        console.log(`Processing file ${i + 1}/${maxFiles}: ${file.fullPath || file.filename}`);
+        console.log(`File details:`, file);
         
-        // Build download API URL
-        const downloadUrl = buildDownloadUrl(shareInfo, file.fs_id);
+        // Skip if this is somehow still a directory
+        if (file.is_dir === "1") {
+          console.log(`Skipping directory: ${file.filename}`);
+          continue;
+        }
+
+        // Add delay between requests to avoid rate limiting
+        if (i > 0) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        // Get download link using TeraXtract API
+        console.log(`Making download request for file ${file.filename} with fs_id: ${file.fs_id}`);
+        console.log(`Request payload:`, {
+          shareid: shareid,
+          uk: uk,
+          sign: sign,
+          timestamp: timestamp,
+          fs_id: file.fs_id
+        });
         
-        const downloadResponse = await axios.get(downloadUrl, {
+        const downloadResponse = await axios.post(`${API_BASE}/api/get-download`, {
+          shareid: shareid,
+          uk: uk,
+          sign: sign,
+          timestamp: timestamp,
+          fs_id: file.fs_id
+        }, {
           headers: {
-            ...headers,
-            'Referer': originalUrl,
+            'Content-Type': 'application/json',
+            'Referer': `${API_BASE}/`,
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Host': 'terabox.hnn.workers.dev',
+            'Accept': '*/*',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
           },
-          timeout: 10000
+          timeout: 20000
         });
 
         const downloadData = downloadResponse.data;
-        
-        if (downloadData.errno === 0 && downloadData.list && downloadData.list.length > 0) {
-          const fileData = downloadData.list[0];
-          
+        console.log(`Download API response for ${file.filename}:`, downloadData);
+
+        if (downloadData.downloadLink) {
           results.push({
-            filename: file.server_filename,
-            size: formatFileSize(file.size),
-            sizeBytes: file.size,
-            downloadUrl: fileData.dlink,
-            thumbnail: extractThumbnail(file),
-            fileType: getFileType(file.server_filename),
+            filename: file.filename,
+            fullPath: file.fullPath || file.filename,
+            size: formatFileSize(parseInt(file.size)),
+            sizeBytes: parseInt(file.size),
+            downloadUrl: downloadData.downloadLink,
+            thumbnail: file.thumbs?.url3 || file.thumbs?.url2 || file.thumbs?.url1 || null,
+            fileType: getFileType(file.filename),
             fsId: file.fs_id,
             md5: file.md5 || null,
-            path: file.path || '/',
-            isdir: file.isdir === 1
+            path: file.path || file.fullPath || '/',
+            isdir: false,
+            category: file.category || '1'
           });
         } else {
-          console.warn(`Failed to get download link for: ${file.server_filename}`);
+          console.warn(`No download link found for: ${file.fullPath || file.filename}`);
         }
+
       } catch (fileError) {
-        console.error(`Error processing file ${file.server_filename}:`, fileError.message);
-        // Continue with other files
+        console.error(`Error processing file ${file.fullPath || file.filename}:`, fileError.message);
+        continue;
       }
     }
 
     if (results.length === 0) {
-      throw new Error('Could not get download links for any files. The share might be password protected or expired.');
+      throw new Error('Could not get download links for any files. The files might be password protected or expired.');
     }
 
     return {
-      shareTitle: shareInfo.title || fileList[0].server_filename,
+      shareTitle: infoData.title || (results.length > 0 ? results[0].filename : 'Terabox Share'),
       shareId: shareId,
       files: results,
-      totalFiles: fileList.length,
+      totalFiles: allFiles.length,
       processedFiles: results.length,
-      shareUrl: originalUrl,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      method: 'TeraXtract API'
     };
 
   } catch (error) {
@@ -232,41 +305,21 @@ async function getTeraboxDownloadLink(shareId, originalUrl) {
       throw new Error('Request timeout. Please try again.');
     }
     if (error.response?.status === 403) {
-      throw new Error('Access denied. Please check your cookie or the share might be private.');
+      throw new Error('API not available. Service might be temporarily down.');
     }
     if (error.response?.status === 404) {
       throw new Error('Share not found. Please check the URL.');
     }
-    throw error;
+    
+    // Re-throw with original message if it's already a custom error
+    if (error.message.includes('Password required') || 
+        error.message.includes('Share not found') ||
+        error.message.includes('No files found')) {
+      throw error;
+    }
+    
+    throw new Error(`API Error: ${error.message}`);
   }
-}
-
-/**
- * Build download URL with proper parameters
- */
-function buildDownloadUrl(shareInfo, fsId) {
-  const params = new URLSearchParams({
-    sign: shareInfo.sign,
-    timestamp: shareInfo.timestamp,
-    fid_list: `[${fsId}]`,
-    primaryid: shareInfo.primaryid,
-    uk: shareInfo.uk,
-    product: 'share',
-    type: 'nolimit'
-  });
-
-  return `https://www.terabox.com/api/download?${params.toString()}`;
-}
-
-/**
- * Extract thumbnail URL from file data
- */
-function extractThumbnail(file) {
-  if (file.thumbs) {
-    // Try different thumbnail sizes
-    return file.thumbs.url3 || file.thumbs.url2 || file.thumbs.url1 || null;
-  }
-  return null;
 }
 
 /**

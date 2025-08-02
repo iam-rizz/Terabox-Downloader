@@ -1,6 +1,47 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/pages/api-reference/create-next-app).
+This is a [Next.js](https://nextjs.org) project for downloading files from Terabox sharing links.
 
-## Getting Started
+## 🚀 Features
+
+- Extract direct download links from Terabox URLs
+- Support for multiple Terabox domains
+- Beautiful, responsive UI
+- Real-time processing status
+- Multiple file format support
+- Copy download links to clipboard
+
+## ⚙️ Setup & Configuration
+
+### 1. Install Dependencies
+
+```bash
+npm install
+# or
+yarn install
+# or
+pnpm install
+```
+
+### 2. Configure Environment Variables
+
+1. Copy the example environment file:
+```bash
+cp .env.local.example .env.local
+```
+
+2. Get your Terabox cookie:
+   - Go to [https://www.terabox.com/](https://www.terabox.com/) in your browser
+   - Log in to your Terabox account
+   - Open Developer Tools (F12)
+   - Go to Application/Storage → Cookies → https://www.terabox.com
+   - Copy all cookie values
+   - Paste them in `.env.local` as `TERABOX_COOKIE`
+
+3. Example `.env.local`:
+```env
+TERABOX_COOKIE=BAIDUID=xxx; BIDUPSID=xxx; PSTM=xxx; PANWEB=1; csrfToken=xxx; ndus=xxx; ndut_fmt=xxx; STOKEN=xxx
+```
+
+### 3. Run the Development Server
 
 First, run the development server:
 

@@ -1,7 +1,13 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  swcMinify: true,
+  // Configure allowed dev origins for CORS
+  allowedDevOrigins: [
+    '141.140.12.27',
+    'localhost',
+    '127.0.0.1',
+    '0.0.0.0'
+  ],
   images: {
     domains: [
       'terabox.com',
